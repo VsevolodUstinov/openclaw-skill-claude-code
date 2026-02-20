@@ -101,6 +101,124 @@ Real WhatsApp chat showing the full flow — task launch, progress updates, and 
 
 ---
 
+## Security Considerations
+
+This section addresses each finding from the ClawHub automated security scan. All behaviors
+described here are intentional, necessary, and declared in the skill's frontmatter metadata.
+
+### Gateway Token Access
+
+**What happens:** `run-task.py` and `scripts/openclaw_notify.py` read the OpenClaw gateway
+authentication token from `~/.openclaw/openclaw.json` (JSON key path: `gateway.auth.token`).
+
+**Why it's needed:** The token authenticates HTTP API calls to the local OpenClaw gateway
+(`http://localhost:18789`) for two purposes:
+1. Sending WhatsApp notifications (heartbeats, results, errors)
+2. Waking the agent with results via the `sessions_send` tool
+
+**Scope:** The token is used only for localhost API calls within the current machine. It is
+never logged, stored in a secondary location, or transmitted to any external host or service.
+
+**Declared in:** SKILL.md frontmatter `requires.config: ["gateway.auth.token"]`
+
+---
+
+### Config Changes Required
+
+**What's needed:** Two values in `~/.openclaw/openclaw.json` must be set by the user:
+
+```json
+{
+  "gateway": { "tools": { "allow": ["sessions_send"] } },
+  "tools": { "sessions": { "visibility": "all" } }
+}
+```
+
+**Why:** By default, the OpenClaw HTTP API blocks `sessions_send` for safety. Allowing it
+enables the skill to inject results into the agent's session queue so the agent wakes up
+and processes the result. `tools.sessions.visibility: "all"` makes sessions addressable
+by session key (required to route results to the correct agent session).
+
+**Who makes these changes:** The **user**, manually, one time during setup. The skill itself
+does NOT read or write `openclaw.json` (except reading the auth token). These are explicit
+user-authorized configuration choices, not automatic privilege escalation.
+
+**Scope:** Both settings affect only the local OpenClaw gateway. The gateway defaults to
+localhost-only binding (`127.0.0.1:18789`), so these settings create no external exposure.
+
+**Declared in:** SKILL.md frontmatter `requires.config: ["gateway.tools.allow", "tools.sessions.visibility"]`
+
+---
+
+### Persistent Files Written
+
+The skill writes to two locations:
+
+| File | Purpose | Permissions |
+|------|---------|-------------|
+| `~/.openclaw/claude_sessions.json` | Session registry for task tracking and resumption | `0o600` (owner r/w only) |
+| `<skill-dir>/pids/<timestamp>.pid` | PID file for the running task | Default umask |
+
+**Session registry (`claude_sessions.json`):** Stores task labels, project directories,
+session IDs, output file paths, and completion status. Used to resume previous Claude Code
+sessions. Auto-created if missing. Permissions set to `0o600` on every write.
+
+**PID files (`pids/`):** One file per running task, containing the process PID, task
+description, and start timestamp. Automatically deleted when the task completes or exits.
+Stale PID files (pointing to dead processes) are cleaned up on next task launch.
+
+No data is sent to any external service.
+
+**Declared in:** SKILL.md frontmatter `config.stateDirs: ["~/.openclaw"]`
+
+---
+
+### `--dangerously-skip-permissions` Flag
+
+**What it does:** Disables Claude Code's interactive confirmation prompts for tool use
+(file writes, bash commands, etc.).
+
+**Why it's required:** The skill launches Claude Code in non-interactive print mode (`-p`)
+via `nohup`, detached from any terminal. There is no user present to answer prompts. Any
+prompt that appears would stall the process indefinitely until the timeout kills it.
+`--dangerously-skip-permissions` is the standard mechanism for running Claude Code in
+automated/unattended mode — it is explicitly documented by Anthropic for this use case.
+
+**Scope:** Grants Claude Code autonomy within the project directory you specify. The
+autonomy applies only to the task and project directory you provide.
+
+**Important:** Only use this skill with prompts and project directories you trust. Running
+arbitrary untrusted prompts with this flag can cause unintended filesystem changes.
+
+---
+
+### Network Endpoints (Localhost Only)
+
+The skill itself makes no external network calls. All HTTP requests go to localhost:
+
+| Endpoint | Tool | Purpose |
+|----------|------|---------|
+| `http://localhost:18789/tools/invoke` | `message` | Send WhatsApp heartbeats and results |
+| `http://localhost:18789/tools/invoke` | `sessions_send` | Wake agent with task result |
+
+Claude Code (the subprocess) may make external network calls as part of executing the
+task you give it — web search, API calls, etc. This is Claude Code's own behavior,
+separate from this skill's network activity.
+
+---
+
+### Trusted Environment Requirement
+
+This skill is designed for **single-user, local, trusted environments**:
+- The machine runs OpenClaw and Claude Code for your own use
+- You control the prompts sent to Claude Code
+- The project directories you specify are your own
+
+It is not designed for multi-user setups, public-facing servers, or environments where
+prompt content comes from untrusted sources.
+
+---
+
 ## Installation
 
 Clone into your OpenClaw skills directory:

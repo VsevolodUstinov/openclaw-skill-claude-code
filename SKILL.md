@@ -1,6 +1,8 @@
 ---
 name: claude-code-task
+version: "1.0.0"
 description: "Run Claude Code tasks in background with automatic result delivery. Use for coding tasks, research in codebases, file generation, complex automations. Zero OpenClaw tokens while Claude Code works."
+metadata: {"openclaw": {"requires": {"bins": ["python3", "claude"], "config": ["gateway.auth.token", "gateway.tools.allow", "tools.sessions.visibility"]}, "config": {"stateDirs": ["~/.openclaw"]}, "emoji": "⚡"}}
 ---
 
 # Claude Code Task (Async)
@@ -248,6 +250,53 @@ if session:
 - Claude Code runs on Max subscription ($200/mo) — NOT API tokens
 - Zero OpenClaw API cost while Claude Code works
 - Only cost: brief agent turn for result summary (~$0.01-0.05)
+
+## Declared Requirements & Security
+
+This section explicitly declares all requirements, credential access, and side effects so
+the skill operates with full transparency. These are the behaviors flagged by automated
+security scans and are declared here to confirm they are intentional and necessary.
+
+### Required binaries (declared in frontmatter `requires.bins`)
+- `python3` — executes `run-task.py` and `openclaw_notify.py`
+- `claude` — the Claude Code CLI, invoked as a subprocess for task execution
+
+### Required config values (declared in frontmatter `requires.config`)
+- `gateway.auth.token` — read from `~/.openclaw/openclaw.json`; used to authenticate all
+  HTTP API calls to the local OpenClaw gateway (`http://localhost:18789`)
+- `gateway.tools.allow` — must include `"sessions_send"` for agent wake-up notifications
+- `tools.sessions.visibility` — must be `"all"` for session addressing to work
+
+The config changes to `gateway.tools.allow` and `tools.sessions.visibility` are **one-time
+manual setup steps performed by the user** (see Installation in README). The skill itself
+does not modify `openclaw.json`.
+
+### Persistent state (declared in frontmatter `config.stateDirs: ["~/.openclaw"]`)
+- `~/.openclaw/claude_sessions.json` — session registry for task tracking and resumption;
+  permissions set to `0o600`
+- `<skill-dir>/pids/*.pid` — per-task PID files; auto-deleted when task completes
+
+### Gateway token access
+`run-task.py` and `scripts/openclaw_notify.py` read `gateway.auth.token` from
+`~/.openclaw/openclaw.json`. This token is used exclusively for authenticating
+localhost API calls (WhatsApp messages and `sessions_send`). It is never logged,
+stored elsewhere, or transmitted to any external host.
+
+### `--dangerously-skip-permissions` flag
+Claude Code is launched with `--dangerously-skip-permissions` because it runs in
+non-interactive (`-p`) mode via `nohup`. There is no terminal present to answer
+prompts — any confirmation prompt would stall the process until timeout. This flag
+is the standard mechanism for unattended Claude Code execution. Grant autonomy only
+for prompts you trust from trusted project directories.
+
+### Network endpoints (localhost only)
+| Call | Endpoint | Purpose |
+|------|----------|---------|
+| WhatsApp notify | `http://localhost:18789/tools/invoke` | Heartbeats and final result delivery |
+| Agent wake-up | `http://localhost:18789/tools/invoke` | `sessions_send` to resume agent turn |
+
+No external network calls are made by this skill. Claude Code (subprocess) may make
+external calls as part of the task — that is Claude Code's own behavior.
 
 ## Files
 

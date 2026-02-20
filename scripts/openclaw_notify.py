@@ -23,11 +23,22 @@ from pathlib import Path
 import requests
 
 BG_PREFIX = "📡 "
+
+# Security: all network calls go to localhost only (OpenClaw gateway).
+# Declared in SKILL.md frontmatter: requires.config["gateway.tools.allow"]
 GW_URL = "http://localhost:18789"
+
+# Security: reads gateway.auth.token from this config file to authenticate
+# local HTTP API calls. Token is used only for localhost:18789 notifications.
+# No credentials are stored, logged, or transmitted externally.
+# Declared in SKILL.md frontmatter: requires.config["gateway.auth.token"]
 CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
 
 
 def _get_token():
+    # Security: reads gateway.auth.token from ~/.openclaw/openclaw.json.
+    # Required to authenticate notification API calls to the local OpenClaw gateway.
+    # Declared requirement: SKILL.md frontmatter requires.config["gateway.auth.token"]
     return json.loads(CONFIG_PATH.read_text())["gateway"]["auth"]["token"]
 
 

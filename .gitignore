@@ -10,3 +10,4 @@ build/
 .venv
 pids/*.pid
 /tmp/
+telegram-post-draft.md

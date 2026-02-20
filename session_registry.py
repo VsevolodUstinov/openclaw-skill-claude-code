@@ -29,6 +29,9 @@ from pathlib import Path
 from typing import Optional, Dict, List
 
 
+# Security: this file stores task metadata (session IDs, labels, project dirs, output paths).
+# Permissions are set to 0o600 (owner read/write only) on every write.
+# Declared in SKILL.md frontmatter: config.stateDirs["~/.openclaw"]
 REGISTRY_FILE = Path.home() / ".openclaw" / "claude_sessions.json"
 
 
