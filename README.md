@@ -85,7 +85,7 @@ The dual delivery ensures both you and your agent see the result. The agent's su
 
 ## Requirements
 
-- [OpenClaw](https://openclaw.dev) running locally (default port `18789`)
+- [OpenClaw](https://docs.openclaw.ai) running locally (default port `18789`)
 - [Claude Code CLI](https://github.com/anthropics/claude-code) (`claude`) installed and authenticated
 - Claude Max subscription (for $0 API cost per task)
 - Python 3.10+ with `requests` (`pip install requests`)
@@ -447,4 +447,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-*Built on top of [OpenClaw](https://openclaw.dev) and [Claude Code](https://github.com/anthropics/claude-code).*
+*Built on top of [OpenClaw](https://docs.openclaw.ai) and [Claude Code](https://github.com/anthropics/claude-code).*

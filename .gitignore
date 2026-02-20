@@ -8,6 +8,5 @@ dist/
 build/
 .env
 .venv
-pids/
-*.pid
+pids/*.pid
 /tmp/
