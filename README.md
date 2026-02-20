@@ -85,9 +85,9 @@ The dual delivery ensures both you and your agent see the result. The agent's su
 
 Real WhatsApp chat showing the full flow — task launch, progress updates, and result delivery:
 
-| Task Launch & Progress | Result Delivery |
-|:---:|:---:|
-| ![Launch](docs/screenshot-demo.jpg) | ![Result](docs/screenshot-result.jpg) |
+| Task Launch & Progress | Result Delivery | Agent Verification |
+|:---:|:---:|:---:|
+| ![Launch](docs/screenshot-demo.jpg) | ![Result](docs/screenshot-result.jpg) | ![Verification](docs/screenshot-verification.jpg) |
 
 ---
 
