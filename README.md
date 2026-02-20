@@ -81,6 +81,14 @@ For anyone running an always-on OpenClaw agent, this changes the economics of lo
 
 The dual delivery ensures both you and your agent see the result. The agent's summary turn costs ~$0.01–0.05 (Sonnet-class) and gives you a digest + next-step recommendations.
 
+### In Action
+
+Real WhatsApp chat showing the full flow — task launch, progress updates, and result delivery:
+
+| Task Launch & Progress | Result Delivery |
+|:---:|:---:|
+| ![Launch](docs/screenshot-demo.jpg) | ![Result](docs/screenshot-result.jpg) |
+
 ---
 
 ## Requirements
