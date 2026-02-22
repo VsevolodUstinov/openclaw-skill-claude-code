@@ -515,6 +515,17 @@ If you get "Session ID not found or expired":
 - Try finding the correct session ID: `cat ~/.openclaw/claude_sessions.json`
 - If session expired, start fresh (without `--resume`)
 
+### "No such file or directory: claude" when launched from cron
+
+Cron doesn't inherit your shell's PATH. If `claude` is installed via NVM (Node Version Manager), add the PATH to your crontab:
+
+```bash
+# Add at the top of crontab (crontab -e):
+PATH=/home/ubuntu/.nvm/versions/node/v22.22.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+```
+
+Or use the full path to claude in your cron scripts.
+
 ### Process was killed after 2 minutes
 
 You forgot `nohup`. The `exec` tool's timeout killed it. Always use:
