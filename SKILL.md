@@ -1,19 +1,17 @@
 ---
 name: claude-code-task
-version: "1.0.0"
-description: "Run Claude Code tasks in background with automatic result delivery. Use for coding tasks, research in codebases, file generation, complex automations. Zero OpenClaw tokens while Claude Code works."
-metadata: {"openclaw": {"requires": {"bins": ["python3", "claude"], "config": ["gateway.auth.token", "gateway.tools.allow", "tools.sessions.visibility"]}, "config": {"stateDirs": ["~/.openclaw"]}, "emoji": "⚡"}}
+description: "Run Claude Code tasks in background with automatic result delivery. Use for coding tasks, research in codebase, file generation, complex automations. Zero OpenClaw tokens while Claude Code works."
 ---
 
 # Claude Code Task (Async)
 
-Run Claude Code in background — zero OpenClaw tokens while it works. Results delivered to your chat automatically.
+Run Claude Code in background — zero OpenClaw tokens while it works. Results delivered to WhatsApp or Telegram automatically.
 
 ## Important: Claude Code = General AI Agent
 
 Claude Code is NOT just a coding tool. It's a full-powered AI agent with web search, file access, and deep reasoning. Use it for ANY complex task:
 
-- **Research** — web search, synthesis, competitive analysis, deep investigation
+- **Research** — web search, synthesis, competitive analysis, user experience reports
 - **Coding** — create tools, scripts, APIs, refactor codebases
 - **Analysis** — read and analyze files, data, logs, source code
 - **Content** — write docs, presentations, reports, summaries
@@ -31,34 +29,90 @@ Give it prompts the same way you'd talk to a smart human — natural language, f
 
 ⚠️ **NEVER put the task text directly in the shell command** — quotes, special characters, and newlines WILL break argument parsing. Always save the prompt to a file first, then use `$(cat file)`.
 
+### WhatsApp
+
 ```bash
 # Step 1: Save prompt to a temp file
 write /tmp/cc-prompt.txt with your task text
 
 # Step 2: Launch with $(cat ...)
-nohup python3 {SKILL_DIR}/run-task.py \
+nohup python3 {baseDir}/run-task.py \
   --task "$(cat /tmp/cc-prompt.txt)" \
   --project ~/projects/my-project \
-  --session "SESSION_KEY" \
+  --session "agent:main:whatsapp:group:<JID>" \
   --timeout 900 \
   > /tmp/cc-run.log 2>&1 &
 ```
 
-- `{SKILL_DIR}` = path to the skill directory (e.g. `~/.openclaw/workspace/skills/claude-code-task`)
-- `SESSION_KEY` = current session key (e.g. `agent:main:whatsapp:group:YOUR_GROUP_JID@g.us`)
-- `--timeout` = max runtime in seconds (default: 7200 = 2 hours)
+The `--session` key (e.g. `agent:main:whatsapp:group:120363425246977860@g.us`) is used to auto-detect the WhatsApp target.
+
+### Telegram
+
+```bash
+nohup python3 {baseDir}/run-task.py \
+  --task "$(cat /tmp/cc-prompt.txt)" \
+  --project ~/projects/my-project \
+  --session "agent:main:telegram:user:123456789" \
+  --notify-channel telegram \
+  --notify-target 123456789 \
+  --timeout 900 \
+  > /tmp/cc-run.log 2>&1 &
+```
+
+### Telegram Threaded Mode (1:1 DM with threads)
+
+When Marvin is used in Telegram Threaded Mode, each thread has its own session key like `agent:main:main:thread:369520`. Use `--notify-session-id` to wake the exact thread session — the session carries thread context for auto-routing:
+
+```bash
+nohup python3 {baseDir}/run-task.py \
+  --task "$(cat /tmp/cc-prompt.txt)" \
+  --project ~/projects/my-project \
+  --session "agent:main:main:thread:369520" \
+  --notify-channel telegram \
+  --notify-target 112087171 \
+  --notify-session-id "SESSION_UUID" \
+  --timeout 900 \
+  > /tmp/cc-run.log 2>&1 &
+```
+
+All 5 notification types route to the DM thread when `--session` key contains `:thread:<id>` ✅
+
+- `--notify-session-id` — OpenClaw session UUID. Wakes the exact thread session via `openclaw agent --session-id <uuid>`. Also enables thread-aware `agent_msg` instruction: explicit `threadId` is embedded in the instruction so the agent passes it to the message tool → agent summary reaches the thread ✅
+- `--notify-thread-id` — Telegram thread ID (auto-detected from session key `*:thread:<id>`). Passed as `threadId` in direct HTTP calls — works for DM threads ✅ (confirmed in practice, despite Bot API docs saying "forum supergroups only").
+- `--reply-to-message-id` — Kept but NOT injected into agent_msg. Does not improve DM thread routing; can break routing if combined with `message_thread_id`.
+
+- `--notify-channel` — `telegram` or `whatsapp` (overrides auto-detection)
+- `--notify-target` — Telegram chat ID or WhatsApp JID
+- `--timeout` — max runtime in seconds (default: 7200 = 2 hours)
 - Always redirect stdout/stderr to a log file
 
 ### Why file-based prompts?
+Research/complex prompts contain single quotes, double quotes, markdown, backticks — any of these break shell argument parsing. Saving to a file and reading with `$(cat ...)` avoids all quoting issues.
 
-Research and complex prompts contain single quotes, double quotes, markdown, backticks — any of these break shell argument parsing. Saving to a file and reading with `$(cat ...)` avoids all quoting issues.
+## Channel Detection
+
+The `detect_channel()` function determines where to send notifications:
+
+1. **CLI override wins** — if `--notify-channel` and `--notify-target` are both provided, those are used exclusively
+2. **WhatsApp auto-detect** — if the session key contains `@g.us` (WhatsApp group JID), WhatsApp is used
+3. **No target** — if neither applies, notifications are silently skipped
+
+```python
+def detect_channel(session_key):
+    if NOTIFY_CHANNEL_OVERRIDE and NOTIFY_TARGET_OVERRIDE:
+        return NOTIFY_CHANNEL_OVERRIDE, NOTIFY_TARGET_OVERRIDE
+    jid = extract_group_jid(session_key)
+    if jid:
+        return "whatsapp", jid
+    return None, None
+```
 
 ## How It Works
 
 ```
 ┌─────────────┐     nohup      ┌──────────────┐
-│  OpenClaw   │ ──────────────▶│  run-task.py  │
-│  (agent)    │                │  (detached)   │
+│    Agent     │ ──────────────▶│  run-task.py  │
+│  (OpenClaw)  │                │  (detached)   │
 └─────────────┘                └──────┬───────┘
                                       │
                                       ▼
@@ -71,48 +125,102 @@ Research and complex prompts contain single quotes, double quotes, markdown, bac
                           ▼           ▼           ▼
                     Every 60s    On complete   On error/timeout
                     ┌────────┐  ┌──────────┐  ┌──────────────┐
-                    │ 📡 ping │  │ ✅ result │  │ ❌/⏰/💥 error│
-                    │WhatsApp│  │ WhatsApp  │  │  WhatsApp    │
-                    │ direct │  │ + session │  │  + session   │
+                    │ ⏳ ping │  │ ✅ result │  │ ❌/⏰/💥 error│
+                    │ silent │  │ channel  │  │   channel    │
                     └────────┘  └──────────┘  └──────────────┘
 ```
 
-### Notification flow:
+### WhatsApp notification flow:
 1. **Heartbeat pings** (every 60s) → WhatsApp direct (informational, no agent wake)
 2. **Final result** → WhatsApp direct (human sees immediately) + `sessions_send` (agent wakes up)
-3. **Agent receives** `[CLAUDE_CODE_RESULT]` via sessions_send → processes it → sends summary to WhatsApp
+3. **Agent receives** `[CLAUDE_CODE_RESULT]` via sessions_send → processes it → sends summary via `message(send)` to WhatsApp group
 4. Human sees both: raw result + agent's analysis/next steps
 
-### Key detail: agent response delivery
-The `sessions_send` message includes instructions for the agent to send its response
-via `message(action=send)` directly to WhatsApp — NOT via the announce step.
-Agent must reply `NO_REPLY` after sending its message to avoid duplicates.
+### Telegram notification flow (DM Threaded Mode — full pipeline):
+1. 🚀 **Launch notification** → thread ✅ (silent; HTML; `<blockquote expandable>` for prompt; via `send_telegram_direct`)
+2. ⏳ **Heartbeat** (every 60s) → thread ✅ (silent; plain text; via `send_telegram_direct`)
+3. 📡 **Claude Code mid-task updates** → thread ✅ (on-disk Python script `/tmp/cc-notify-{pid}.py`; CC calls file; prefix `"📡 🟢 CC: "` auto-added)
+4. ✅/❌/⏰/💥 **Result notification** → thread ✅ (HTML; `<blockquote expandable>` for result; via `send_telegram_direct`)
+5. 🤖 **Agent summary** → main chat ⚠️ (known limitation: `openclaw agent --session-id` synthetic messages have no `currentThreadTs`; acceptable)
+
+**`send_telegram_direct()`** is the core mechanism for all thread-targeted notifications from external scripts. It calls `api.telegram.org` directly with `message_thread_id` — bypasses the OpenClaw message tool entirely (which cannot route to DM threads from outside a session context).
+
+**Fallback** — if agent wake fails (session locked/busy): `already_sent=True` is set after the direct send, so no duplicate is sent.
+
+### Key detail: Telegram vs WhatsApp delivery
+
+**WhatsApp:** Raw result sent directly (human sees it immediately) + `sessions_send` wakes agent for analysis.
+
+**Telegram:** Result sent via `send_telegram_direct` → then agent woken via `openclaw agent --session-id` (no `--deliver`). The agent sends its response via `message(action=send)` and replies `NO_REPLY`. This avoids double messages — `--deliver` would deliver the agent's turn output *on top of* any `message(action=send)` calls inside the turn.
+
+**Why not `sessions_send` for Telegram?** `sessions_send` is blocked in the HTTP `/tools/invoke` deny list by architectural design. The `openclaw agent` CLI bypasses this limitation.
 
 ## Reliability Features
 
 ### Timeout (default 2 hours)
-- `--timeout 3600` → after 3600s: SIGTERM → wait 10s → SIGKILL
-- Timeout notification sent with tool call count and partial output
+- `--timeout 7200` → after 7200s: SIGTERM → wait 10s → SIGKILL
+- Timeout notification sent to channel with tool call count and last activity
 - Partial output saved to file
 
 ### Crash safety
 - `try/except` wraps entire main → crash notification always sent
-- Both WhatsApp and sessions_send attempted on any failure
+- Both channel notification and agent wake attempted on any failure
 
 ### PID tracking
-- PID file written to `pids/` directory (next to `run-task.py`)
+- PID file written to `skills/claude-code-task/pids/`
 - Stale PIDs cleaned on startup
-- Check running tasks: `ls {SKILL_DIR}/pids/`
+- Can check running tasks: `ls skills/claude-code-task/pids/`
+
+### Silent mode (Telegram only)
+Telegram supports silent notifications (no sound). This is used for background/informational messages:
+- Heartbeat pings → `silent=True`
+- Launch notifications → `silent=True`
+- Final results → `silent=False` (default, user attention needed)
+
+WhatsApp does NOT support silent mode — the flag is ignored for WhatsApp.
+
+### Telegram DM Threads vs Forum Groups
+
+Telegram has two distinct thread models. The key difference for run-task.py is how to route messages to the thread.
+
+**The core problem with external scripts:**
+- The OpenClaw `message` tool's `threadId` parameter is **Discord-specific** — ignored for Telegram
+- Target format `"chatId:topic:threadId"` is rejected by the message tool's target resolver
+- Session auto-routing (`currentThreadTs`) works ONLY inside active sessions — external scripts have no session context
+- **Solution:** `send_telegram_direct()` bypasses the message tool entirely; calls `api.telegram.org` directly with `message_thread_id`
+
+**DM Threaded Mode** (bot-user private chat with threads):
+- All notifications use `send_telegram_direct(chat_id, text, thread_id=..., parse_mode=...)` ✅
+- `thread_id` auto-extracted from session key `*:thread:<id>` by `extract_thread_id()`
+- Launch + finish: `parse_mode="HTML"` with `<blockquote expandable>` for prompt/result
+- Heartbeats + mid-task: `parse_mode=None` (plain text, avoid Markdown parse errors)
+- **`parse_mode="Markdown"` trap**: finish messages contain `**text**` (CommonMark bold); Telegram MarkdownV1 rejects this with HTTP 400 — messages silently don't arrive
+- **`replyTo` trap**: combining `replyTo` + `message_thread_id` → Telegram rejects request → fallback strips thread_id → message lands in main chat
+- Agent summary: `openclaw agent --session-id <uuid>` wakes thread session; response goes to main chat (no `currentThreadTs` in synthetic messages — known, acceptable limitation)
+
+**Forum Groups** (supergroup with Forum topics enabled):
+- Same `send_telegram_direct()` approach works; `message_thread_id` is standard Bot API for Forum topics
+- Auto-detected from session key pattern `*:thread:<id>`
+
+**Claude Code mid-task updates:**
+- DO NOT embed bot tokens or curl commands in the task prompt — Claude Code flags this as prompt injection
+- run-task.py writes `/tmp/cc-notify-{pid}.py` to disk before launching Claude Code
+- Task prompt prepended with `[Automation context: ... python3 /tmp/cc-notify-{pid}.py 'msg' ...]`
+- Claude Code calls the file (legitimate local script pattern, no safety warning)
+- Script automatically prepends `"📡 🟢 CC: "` to all messages; cleaned up in `finally` block
 
 ### Notification types
-| Event | Emoji | WhatsApp | sessions_send |
-|-------|-------|----------|---------------|
-| Launch | 🚀 | ✅ | ❌ |
-| Heartbeat | 📡 | ✅ | ❌ |
-| Success | ✅ | ✅ | ✅ |
-| Error | ❌ | ✅ | ✅ |
-| Timeout | ⏰ | ✅ | ✅ |
-| Crash | 💥 | ✅ | ✅ |
+
+| Event | Emoji | WhatsApp delivery | Telegram delivery | DM thread? |
+|-------|-------|-------------------|-------------------|------------|
+| Launch | 🚀 | send_channel (Markdown) | send_telegram_direct (HTML, silent) | ✅ message_thread_id |
+| Heartbeat | ⏳ | send_channel (Markdown) | send_telegram_direct (plain, silent) | ✅ message_thread_id |
+| CC mid-task update | 📡 | — | /tmp/cc-notify-{pid}.py (Bot API, silent) | ✅ message_thread_id |
+| Success | ✅ | send_channel + sessions_send | send_telegram_direct (HTML) + openclaw agent | ✅ message_thread_id |
+| Error | ❌ | send_channel + sessions_send | send_telegram_direct (HTML) + openclaw agent | ✅ message_thread_id |
+| Timeout | ⏰ | send_channel + sessions_send | send_telegram_direct (HTML) + openclaw agent | ✅ message_thread_id |
+| Crash | 💥 | send_channel + sessions_send | send_telegram_direct (HTML) + openclaw agent | ✅ message_thread_id |
+| Agent summary | 🤖 | — | openclaw agent wake | ⚠️ main chat (no thread ctx) |
 
 ## Claude Code Flags
 
@@ -128,46 +236,119 @@ Agent must reply `NO_REPLY` after sending its message to avoid duplicates.
 ### Git requirement
 Claude Code needs a git repo. `run-task.py` auto-inits if missing.
 
+## Python 3.9 Compatibility
+
+`run-task.py` uses `Optional[X]` from `typing` (not `X | None`) for compatibility with Python 3.9. The union syntax (`X | None`) requires Python 3.10+.
+
+```python
+# Correct (3.9+)
+from typing import Optional
+def foo(x: Optional[str]) -> Optional[str]: ...
+
+# Would break on 3.9
+def foo(x: str | None) -> str | None: ...
+```
+
 ## Examples
 
-### Basic coding task
+### WhatsApp: Create a tool
 ```bash
-cat > /tmp/cc-prompt.txt << 'EOF'
-Create a Python CLI tool that converts markdown to HTML with syntax highlighting. Save as convert.py in the project directory.
-EOF
-
-nohup python3 {SKILL_DIR}/run-task.py \
-  -t "$(cat /tmp/cc-prompt.txt)" \
+nohup python3 {baseDir}/run-task.py \
+  -t "Create a Python CLI tool that converts markdown to HTML with syntax highlighting. Save as convert.py" \
   -p ~/projects/md-converter \
-  -s "SESSION_KEY" \
+  -s "agent:main:whatsapp:group:120363425246977860@g.us" \
   > /tmp/cc-run.log 2>&1 &
 ```
 
-### Deep research task
+### Telegram: Research codebase
 ```bash
-cat > /tmp/cc-prompt.txt << 'EOF'
-You are being used as a Deep Research Tool. Your job is to EXECUTE the research below — search the web thoroughly, read pages, and compile findings into a comprehensive report. Do NOT ask for permission, do NOT propose a plan. Just DO the research and return the full detailed findings.
+nohup python3 {baseDir}/run-task.py \
+  --task "$(cat /tmp/cc-prompt.txt)" \
+  --project ~/projects/my-project \
+  --session "agent:main:telegram:user:123456789" \
+  --notify-channel telegram \
+  --notify-target 123456789 \
+  --timeout 1800 \
+  > /tmp/cc-run.log 2>&1 &
+```
 
-RESEARCH TASK:
-Research the current state of AI agent frameworks in 2025. What are the most popular frameworks (LangGraph, AutoGen, CrewAI, etc.), their strengths and weaknesses, real-world use cases, and developer sentiment from forums and discussions.
+### Telegram Threaded Mode: Research codebase
+```bash
+nohup python3 {baseDir}/run-task.py \
+  --task "$(cat /tmp/cc-prompt.txt)" \
+  --project ~/projects/my-project \
+  --session "agent:main:main:thread:369520" \
+  --notify-channel telegram \
+  --notify-target 112087171 \
+  --notify-session-id "fef10682-71b7-497b-b6dc-2d3f24c068c2" \
+  --timeout 1800 \
+  > /tmp/cc-run.log 2>&1 &
+# All 5 notification types go to thread: launch, heartbeats, result, agent summary, CC direct updates
+# thread_id auto-extracted from session key; SESSION_UUID from sessions_list
+```
+
+### Telegram Threaded Mode: Mid-task updates from Claude Code
+
+run-task.py automatically creates an on-disk notification script before launching Claude Code, so CC can send progress updates without seeing the bot token in the prompt (which triggers safety refusals):
+
+```bash
+# Just write a normal task prompt — run-task.py handles the rest
+cat > /tmp/cc-prompt.txt << 'EOF'
+STEP 1: Write analysis to /tmp/report.txt (600+ words)...
+
+After step 1, send a progress notification using the script from the
+automation context above: python3 /tmp/cc-notify-<PID>.py "Step 1 done."
+
+STEP 2: Write summary to /tmp/summary.txt...
 EOF
 
-nohup python3 {SKILL_DIR}/run-task.py \
-  -t "$(cat /tmp/cc-prompt.txt)" \
-  -p /tmp/cc-research \
-  -s "SESSION_KEY" \
+nohup python3 {baseDir}/run-task.py \
+  --task "$(cat /tmp/cc-prompt.txt)" \
+  --project ~/projects/my-project \
+  --session "agent:main:main:thread:<THREAD_ID>" \
+  --notify-channel telegram \
+  --notify-target <CHAT_ID> \
+  --notify-session-id "<SESSION_UUID>" \
+  --timeout 1800 \
   > /tmp/cc-run.log 2>&1 &
+# run-task.py writes /tmp/cc-notify-{pid}.py before launch
+# Prepends "[Automation context: use python3 /tmp/cc-notify-{pid}.py 'msg']" to task
+# Claude Code calls the file; prefix "📡 🟢 CC: " auto-added; file cleaned up on exit
 ```
+
+> ⚠️ **Never embed bot tokens or curl commands in the task prompt** — Claude Code correctly identifies hardcoded tokens + external API calls as prompt injection and refuses. Use the on-disk script pattern above instead.
+
+> **Quick reference: launching from a Telegram DM thread**
+> ```bash
+> nohup python3 {baseDir}/run-task.py \
+>   --task "$(cat /tmp/prompt.txt)" \
+>   --project ~/projects/x \
+>   --session "agent:main:main:thread:<THREAD_ID>" \
+>   --notify-channel telegram \
+>   --notify-target <CHAT_ID> \
+>   --notify-session-id "<SESSION_UUID>" \
+>   --timeout 900 \
+>   > /tmp/cc-run.log 2>&1 &
+> ```
+> - `THREAD_ID`: from session key `*:thread:<id>` (auto-extracted)
+> - `SESSION_UUID`: from `sessions_list`
+> - All 5 notification types → thread ✅
 
 ### Long task with extended timeout
 ```bash
-nohup python3 {SKILL_DIR}/run-task.py \
-  -t "$(cat /tmp/cc-prompt.txt)" \
+nohup python3 {baseDir}/run-task.py \
+  -t "Refactor the entire auth module to use JWT tokens" \
   -p ~/projects/backend \
-  -s "SESSION_KEY" \
-  --timeout 7200 \
+  -s "agent:main:whatsapp:group:120363425246977860@g.us" \
+  --timeout 3600 \
   > /tmp/cc-run.log 2>&1 &
 ```
+
+## Cost
+
+- Claude Code runs on Max subscription ($200/mo) — NOT API tokens
+- Zero OpenClaw API cost while Claude Code works
+- Only cost: message delivery + brief agent turn for summary
 
 ## Session Resumption
 
@@ -183,7 +364,7 @@ When a task completes, the session ID is automatically captured and saved to the
 To resume a session, use the `--resume` flag:
 
 ```bash
-nohup python3 {SKILL_DIR}/run-task.py \
+nohup python3 {baseDir}/run-task.py \
   --task "$(cat /tmp/cc-prompt.txt)" \
   --project ~/projects/my-project \
   --session "SESSION_KEY" \
@@ -196,29 +377,20 @@ nohup python3 {SKILL_DIR}/run-task.py \
 Use `--session-label` to give sessions human-readable names for easier tracking:
 
 ```bash
-nohup python3 {SKILL_DIR}/run-task.py \
+nohup python3 {baseDir}/run-task.py \
   --task "$(cat /tmp/cc-prompt.txt)" \
   --project ~/projects/my-project \
   --session "SESSION_KEY" \
-  --session-label "Architecture research" \
+  --session-label "Research on Jackson Berler" \
   > /tmp/cc-run.log 2>&1 &
 ```
 
-### Finding Session IDs
+### Listing Recent Sessions
 
-Session ID is printed to stderr when task completes:
-```bash
-tail /tmp/cc-run.log
-# → 📝 Session registered: abc-123-def
-```
+The agent can read the session registry to find recent sessions:
 
-Or read from registry:
-```bash
-cat ~/.openclaw/claude_sessions.json
-```
-
-Or programmatically:
 ```python
+# Python code (for agent automation)
 from session_registry import list_recent_sessions, find_session_by_label
 
 # List sessions from last 72 hours
@@ -227,9 +399,15 @@ for session in recent:
     print(f"{session['session_id']}: {session['label']} ({session['status']})")
 
 # Find session by label (fuzzy match)
-session = find_session_by_label("Architecture")
+session = find_session_by_label("Jackson")
 if session:
     print(f"Found: {session['session_id']}")
+```
+
+Or manually inspect the registry:
+
+```bash
+cat ~/.openclaw/claude_sessions.json
 ```
 
 ### When to Resume vs Start Fresh
@@ -242,84 +420,70 @@ if session:
 
 **Start fresh when:**
 - Completely unrelated task
-- Previous session context might cause confusion
 - Previous session was exploratory/experimental
+- You want a clean slate
+- Previous session context might cause confusion
 
-## Cost
+### Resume Failure Handling
 
-- Claude Code runs on Max subscription ($200/mo) — NOT API tokens
-- Zero OpenClaw API cost while Claude Code works
-- Only cost: brief agent turn for result summary (~$0.01-0.05)
+If a session ID is invalid or expired:
+- Error message sent to channel with suggestion to start fresh
+- Process exits cleanly (no partial work)
+- Check stderr in `/tmp/cc-run.log` for details
 
-## Declared Requirements & Security
+Common resume failures:
+- Session expired (Claude Code has retention limits)
+- Invalid session ID (typo, wrong format)
+- Session from different project/context
 
-This section explicitly declares all requirements, credential access, and side effects so
-the skill operates with full transparency. These are the behaviors flagged by automated
-security scans and are declared here to confirm they are intentional and necessary.
+### Example Workflow
 
-### Required binaries (declared in frontmatter `requires.bins`)
-- `python3` — executes `run-task.py` and `openclaw_notify.py`
-- `claude` — the Claude Code CLI, invoked as a subprocess for task execution
+**Step 1: Initial research**
+```bash
+# Save prompt
+write /tmp/research-prompt.txt with "Research the codebase architecture for project X"
 
-### Required config values (declared in frontmatter `requires.config`)
-- `gateway.auth.token` — read from `~/.openclaw/openclaw.json`; used to authenticate all
-  HTTP API calls to the local OpenClaw gateway (`http://localhost:18789`)
-- `gateway.tools.allow` — must include `"sessions_send"` for agent wake-up notifications
-- `tools.sessions.visibility` — must be `"all"` for session addressing to work
+# Launch task (Telegram example)
+nohup python3 {baseDir}/run-task.py \
+  --task "$(cat /tmp/research-prompt.txt)" \
+  --project ~/projects/project-x \
+  --session "agent:main:telegram:user:123456789" \
+  --notify-channel telegram \
+  --notify-target 123456789 \
+  --session-label "Project X architecture research" \
+  > /tmp/cc-run.log 2>&1 &
+```
 
-The config changes to `gateway.tools.allow` and `tools.sessions.visibility` are **one-time
-manual setup steps performed by the user** (see Installation in README). The skill itself
-does not modify `openclaw.json`.
+**Step 2: Check result and find session ID**
+```bash
+# Session ID printed in stderr: "📝 Session registered: <id>"
+tail /tmp/cc-run.log
 
-### Persistent state (declared in frontmatter `config.stateDirs: ["~/.openclaw"]`)
-- `~/.openclaw/claude_sessions.json` — session registry for task tracking and resumption;
-  permissions set to `0o600`
-- `<skill-dir>/pids/*.pid` — per-task PID files; auto-deleted when task completes
+# Or read from registry
+cat ~/.openclaw/claude_sessions.json | grep "Project X"
+```
 
-### Gateway token access
-`run-task.py` and `scripts/openclaw_notify.py` read `gateway.auth.token` from
-`~/.openclaw/openclaw.json`. This token is used exclusively for authenticating
-localhost API calls (WhatsApp messages and `sessions_send`). It is never logged,
-stored elsewhere, or transmitted to any external host.
+**Step 3: Follow-up implementation**
+```bash
+# Save follow-up prompt
+write /tmp/implement-prompt.txt with "Based on your research, implement the authentication module"
 
-### `--dangerously-skip-permissions` flag
-Claude Code is launched with `--dangerously-skip-permissions` because it runs in
-non-interactive (`-p`) mode via `nohup`. There is no terminal present to answer
-prompts — any confirmation prompt would stall the process until timeout. This flag
-is the standard mechanism for unattended Claude Code execution. Grant autonomy only
-for prompts you trust from trusted project directories.
-
-### Network endpoints (localhost only)
-| Call | Endpoint | Purpose |
-|------|----------|---------|
-| WhatsApp notify | `http://localhost:18789/tools/invoke` | Heartbeats and final result delivery |
-| Agent wake-up | `http://localhost:18789/tools/invoke` | `sessions_send` to resume agent turn |
-
-No external network calls are made by this skill. Claude Code (subprocess) may make
-external calls as part of the task — that is Claude Code's own behavior.
+# Resume session
+nohup python3 {baseDir}/run-task.py \
+  --task "$(cat /tmp/implement-prompt.txt)" \
+  --project ~/projects/project-x \
+  --session "SESSION_KEY" \
+  --resume <session-id-from-step-1> \
+  --session-label "Project X auth implementation" \
+  > /tmp/cc-run2.log 2>&1 &
+```
 
 ## Files
 
 ```
 skills/claude-code-task/
-├── SKILL.md              # This file (agent instructions)
+├── SKILL.md              # This file
 ├── run-task.py           # Async runner with notifications
 ├── session_registry.py   # Session metadata storage
-├── scripts/
-│   └── openclaw_notify.py  # Notification helper (for CC to send progress updates)
 └── pids/                 # PID files for running tasks (auto-managed)
 ```
-
-## Progress Updates from Claude Code
-
-For tasks expected to take more than 1 minute, include this in your prompt to Claude Code:
-
-```
-Send progress updates via bash (background, no agent wake):
-python3 {SKILL_DIR}/scripts/openclaw_notify.py -g "YOUR_GROUP_JID" -m "YOUR_STATUS" --bg
-
-Send updates at milestones: after major steps, on errors, at completion.
-Keep messages short and informational.
-```
-
-All background messages are prefixed with 📡 to visually distinguish them from agent replies.
