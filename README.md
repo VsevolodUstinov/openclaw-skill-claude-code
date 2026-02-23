@@ -97,7 +97,8 @@ Real WhatsApp chat showing the full flow — task launch, progress updates, and 
 - [Claude Code CLI](https://github.com/anthropics/claude-code) (`claude`) installed and authenticated
 - Claude Max subscription (for $0 API cost per task)
 - Python 3.10+ with `requests` (`pip install requests`)
-- WhatsApp connected to OpenClaw (tested; other channels may work with adaptation)
+- WhatsApp and Telegram connected to OpenClaw (both tested)
+- Other channels may work in principle, but may require lightweight AI-assisted adaptation in `notify_session()` / channel routing logic
 
 ---
 
@@ -555,9 +556,12 @@ ps aux | grep 12345
 
 ## Channel Support
 
-This skill was developed and tested with **WhatsApp** as the notification channel. The notification mechanism (`sessions_send` + WhatsApp direct message) is specific to how OpenClaw handles WhatsApp groups.
+This skill is now tested in production with **WhatsApp and Telegram** notification flows.
 
-Other channels (Telegram, Slack, etc.) should work in principle if OpenClaw supports them, but may require adapting the `notify_session()` function in `run-task.py` to use the appropriate channel parameters.
+- **WhatsApp:** fully tested (launch, heartbeat, Claude Code mid-task updates, finish delivery)
+- **Telegram:** tested, including thread-aware routing improvements in recent versions
+
+Other channels (Slack, Discord, Signal, etc.) should work in principle if OpenClaw supports them, but may require lightweight AI-assisted adaptation in `notify_session()` and channel-specific routing parameters in `run-task.py`.
 
 ---
 
