@@ -110,6 +110,116 @@ def detect_channel(session_key: str):
     return None, None
 
 
+def _invoke_tool(token: str, tool: str, args: dict, timeout: int = 20) -> Optional[dict]:
+    """Invoke OpenClaw tool via gateway; return parsed JSON or None."""
+    try:
+        resp = requests.post(
+            f"{GW_URL}/tools/invoke",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"tool": tool, "args": args},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return None
+        return resp.json()
+    except Exception:
+        return None
+
+
+def resolve_session_meta(token: str, session_key: str) -> Optional[dict]:
+    """Resolve session metadata from sessions_list by exact session key.
+
+    Returns: {"sessionId": str|None, "telegramTarget": str|None, "key": str}
+    """
+    if not token or not session_key:
+        return None
+
+    data = _invoke_tool(token, "sessions_list", {"limit": 200})
+    if not data:
+        return None
+
+    try:
+        # Tool responses are wrapped as text JSON in result.content[0].text
+        txt = data.get("result", {}).get("content", [{}])[0].get("text", "")
+        payload = json.loads(txt) if txt else {}
+        for s in payload.get("sessions", []):
+            if s.get("key") == session_key:
+                dc = s.get("deliveryContext", {}) or {}
+                to = dc.get("to") or s.get("displayName")
+                tg_target = None
+                if isinstance(to, str) and to.startswith("telegram:"):
+                    tg_target = to.split(":", 1)[1]
+                return {
+                    "sessionId": s.get("sessionId"),
+                    "telegramTarget": tg_target,
+                    "key": s.get("key"),
+                }
+    except Exception:
+        return None
+
+    return None
+
+
+def resolve_thread_meta_from_local_files(thread_id: str) -> Optional[dict]:
+    """Resolve {sessionId, telegramTarget} from local session jsonl files.
+
+    Useful when sessions_list doesn't return inactive thread sessions.
+    Looks for newest: ~/.openclaw/agents/main/sessions/*-topic-<thread_id>.jsonl
+    """
+    if not thread_id:
+        return None
+    base = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
+    if not base.exists():
+        return None
+
+    candidates = sorted(
+        base.glob(f"*-topic-{thread_id}.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return None
+
+    p = candidates[0]
+    session_id = p.name.rsplit("-topic-", 1)[0]
+    telegram_target = None
+
+    # Try to extract sender_id from early user envelope messages
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i > 150:
+                    break
+                obj = json.loads(line)
+                if obj.get("type") != "message":
+                    continue
+                msg = (obj.get("message") or {})
+                if msg.get("role") != "user":
+                    continue
+                blocks = msg.get("content") or []
+                for b in blocks:
+                    txt = b.get("text", "") if isinstance(b, dict) else ""
+                    if "sender_id" in txt:
+                        try:
+                            # envelope is embedded json in markdown fence
+                            start = txt.find("{")
+                            end = txt.rfind("}")
+                            if start != -1 and end != -1 and end > start:
+                                meta = json.loads(txt[start:end + 1])
+                                sid = meta.get("sender_id")
+                                if sid:
+                                    telegram_target = str(sid)
+                                    break
+                        except Exception:
+                            pass
+                if telegram_target:
+                    break
+    except Exception:
+        pass
+
+    return {"sessionId": session_id, "telegramTarget": telegram_target, "key": f"agent:main:main:thread:{thread_id}"}
+
+
 def get_telegram_bot_token() -> Optional[str]:
     """Read the Telegram bot token from openclaw.json config."""
     try:
@@ -283,15 +393,20 @@ def notify_session(token: str, session_key: str, group_jid: Optional[str], messa
 
         # Wake the agent, let it send ONE clean response.
         # Fallback: if agent wake fails AND we haven't already sent, send full result directly.
-        # For Telegram thread routing: embed thread_id in target string (target:topic:thread_id).
-        # threadId arg is Discord-specific and ignored by Telegram send.
-        tg_target = f"{target}:topic:{thread_id}" if thread_id else target
+        # NOTE: target:topic:thread format is not supported by message tool for Telegram.
+        # Agent wake response may land in main chat (known limitation).
+        tg_target = target
+        # IMPORTANT: keep wake payload clean and non-leaky.
+        # Do NOT include internal markers like [CLAUDE_CODE_RESULT] / ⚠️ INSTRUCTION,
+        # because in failure modes they may surface to the user chat.
+        safe_preview = message[:1200]
         agent_msg = (
-            f"[CLAUDE_CODE_RESULT]\n{message}\n\n"
-            f"---\n"
-            f"⚠️ INSTRUCTION: You received a Claude Code result above. "
-            f"Send a brief summary to Seva via message(action=send, channel=telegram, "
-            f"target={tg_target}, message=YOUR_SUMMARY), then TTS with same content, then NO_REPLY."
+            "Internal completion signal from run-task.py. "
+            "Do not quote this payload verbatim.\n"
+            "Send only a concise user-facing summary (max 5 bullets) to Telegram, "
+            "then NO_REPLY.\n\n"
+            f"Target: {tg_target}\n"
+            f"Result preview:\n{safe_preview}"
         )
         try:
             # Build openclaw agent command
@@ -459,11 +574,13 @@ def main():
                         help=f"Max runtime in seconds (default: {DEFAULT_TIMEOUT}s = {DEFAULT_TIMEOUT//60}min)")
     parser.add_argument("--resume", help="Resume from previous Claude Code session ID")
     parser.add_argument("--session-label", help="Human-readable label for this session (e.g., 'Research on X')")
-    parser.add_argument("--notify-channel", default="telegram", help="Channel for notifications (default: telegram)")
+    parser.add_argument("--notify-channel", help="Channel for notifications override (telegram|whatsapp)")
     parser.add_argument("--notify-target", help="Target (chat ID / JID) for notifications")
     parser.add_argument("--notify-thread-id", help="Telegram thread ID for threaded mode (auto-detected from session key)")
     parser.add_argument("--notify-session-id", help="OpenClaw session UUID for precise agent wake in threads")
     parser.add_argument("--reply-to-message-id", help="Telegram message ID to reply to (for DM thread routing)")
+    parser.add_argument("--validate-only", action="store_true", help="Resolve routing and exit (no Claude run)")
+    parser.add_argument("--allow-main-telegram", action="store_true", help="Allow Telegram launch without :thread: session (unsafe; default blocked)")
     args = parser.parse_args()
 
     # Set notification globals (overrides auto-detection)
@@ -492,6 +609,93 @@ def main():
         token = get_token() if args.session else None
     except Exception:
         pass
+
+    # Strict Telegram thread routing: auto-resolve missing IDs and fail fast on mismatch.
+    # Goal: make incorrect launches impossible when using thread sessions.
+    session_meta = resolve_session_meta(token, args.session) if (token and args.session) else None
+    if not session_meta and thread_id:
+        # Fallback for inactive sessions not returned by sessions_list
+        session_meta = resolve_thread_meta_from_local_files(thread_id)
+
+    if thread_id:
+        # Thread sessions must always use Telegram notifications
+        if args.notify_channel and args.notify_channel != "telegram":
+            print("❌ Invalid routing: thread session requires --notify-channel telegram", file=sys.stderr)
+            sys.exit(2)
+
+        # If target omitted, auto-resolve from session delivery context
+        if not args.notify_target:
+            auto_tgt = (session_meta or {}).get("telegramTarget")
+            if auto_tgt:
+                args.notify_target = auto_tgt
+                NOTIFY_CHANNEL_OVERRIDE = "telegram"
+                NOTIFY_TARGET_OVERRIDE = auto_tgt
+
+        # If notify-session-id omitted, auto-resolve exact UUID by session key
+        resolved_session_id = (session_meta or {}).get("sessionId")
+        resolved_target = (session_meta or {}).get("telegramTarget")
+        if not notify_session_id and resolved_session_id:
+            notify_session_id = resolved_session_id
+
+        # If caller provided notify-session-id but it mismatches the actual session key, fail hard
+        if notify_session_id and resolved_session_id and notify_session_id != resolved_session_id:
+            print(
+                "❌ Invalid routing: --notify-session-id does not match --session key\n"
+                f"   session key: {args.session}\n"
+                f"   provided:   {notify_session_id}\n"
+                f"   expected:   {resolved_session_id}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        # If notify-target was provided but disagrees with resolved metadata, fail hard.
+        if args.notify_target and resolved_target and str(args.notify_target) != str(resolved_target):
+            print(
+                "❌ Invalid routing: --notify-target does not match thread session metadata\n"
+                f"   session key: {args.session}\n"
+                f"   provided target: {args.notify_target}\n"
+                f"   expected target: {resolved_target}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        # Hard requirements for thread sessions
+        if not args.notify_target:
+            print("❌ Invalid routing: thread session requires --notify-target (auto-resolve failed)", file=sys.stderr)
+            print("   Tip: pass --notify-target <chat_id> or ensure session exists in sessions_list", file=sys.stderr)
+            sys.exit(2)
+        if not notify_session_id:
+            print("❌ Invalid routing: thread session requires --notify-session-id (auto-resolve failed)", file=sys.stderr)
+            print("   Tip: pass --notify-session-id <uuid> from sessions_list", file=sys.stderr)
+            sys.exit(2)
+
+        # Ensure override is active after auto-resolution
+        NOTIFY_CHANNEL_OVERRIDE = "telegram"
+        NOTIFY_TARGET_OVERRIDE = args.notify_target
+
+    # Safety guard: Telegram launches without explicit thread are error-prone and can drift across threads.
+    ch_now, tgt_now = detect_channel(args.session or "")
+    is_telegram_route = (ch_now == "telegram") or (args.notify_channel == "telegram" and bool(args.notify_target))
+    if is_telegram_route and not thread_id:
+        allow_main_env = os.getenv("ALLOW_MAIN_TELEGRAM", "") == "1"
+        if not (args.allow_main_telegram and allow_main_env):
+            print("❌ Unsafe routing blocked: Telegram launch requires thread session (:thread:<id>)", file=sys.stderr)
+            print("   To override for intentional main-chat run: pass --allow-main-telegram AND set ALLOW_MAIN_TELEGRAM=1", file=sys.stderr)
+            sys.exit(2)
+
+    if args.validate_only:
+        ch, tgt = detect_channel(args.session or "")
+        print("✅ Routing validation")
+        print(f"   session: {args.session}")
+        print(f"   thread_id: {thread_id}")
+        print(f"   channel: {ch}")
+        print(f"   target: {tgt}")
+        print(f"   notify_session_id: {notify_session_id}")
+        print(f"   allow_main_telegram: {args.allow_main_telegram}")
+        if session_meta:
+            print(f"   resolved_session_id: {session_meta.get('sessionId')}")
+            print(f"   resolved_telegram_target: {session_meta.get('telegramTarget')}")
+        sys.exit(0)
 
     try:
         # Write PID file

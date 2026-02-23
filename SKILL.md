@@ -25,6 +25,19 @@ Give it prompts the same way you'd talk to a smart human — natural language, f
 
 ## Quick Start
 
+## Telegram Thread Safety (must-follow)
+
+For Telegram thread runs, `run-task.py` is designed to either route correctly or fail immediately.
+
+- Use only `--session "agent:main:main:thread:<THREAD_ID>"`
+- Never use `agent:main:telegram:user:<id>` for thread tasks
+- If routing metadata is inconsistent (thread/session UUID/target mismatch), script exits with `❌ Invalid routing`
+- Main-chat Telegram launches are blocked by default; intentional override requires both:
+  - `--allow-main-telegram`
+  - `ALLOW_MAIN_TELEGRAM=1`
+
+This is intentional: **abort fast > silent misroute**.
+
 ⚠️ **ALWAYS launch via nohup** — exec timeout (2 min) will kill the process!
 
 ⚠️ **NEVER put the task text directly in the shell command** — quotes, special characters, and newlines WILL break argument parsing. Always save the prompt to a file first, then use `$(cat file)`.
@@ -46,43 +59,53 @@ nohup python3 {baseDir}/run-task.py \
 
 The `--session` key (e.g. `agent:main:whatsapp:group:120363425246977860@g.us`) is used to auto-detect the WhatsApp target.
 
-### Telegram
+### Telegram (thread-safe default)
 
 ```bash
+# ALWAYS use the current thread session key from context:
+# agent:main:main:thread:<THREAD_ID>
 nohup python3 {baseDir}/run-task.py \
   --task "$(cat /tmp/cc-prompt.txt)" \
   --project ~/projects/my-project \
-  --session "agent:main:telegram:user:123456789" \
-  --notify-channel telegram \
-  --notify-target 123456789 \
+  --session "agent:main:main:thread:<THREAD_ID>" \
   --timeout 900 \
   > /tmp/cc-run.log 2>&1 &
 ```
 
+> Do **NOT** use `agent:main:telegram:user:<id>` for thread tests/runs.
+> That routes to main chat scope and can drift from the source thread.
+
 ### Telegram Threaded Mode (1:1 DM with threads)
 
-When Marvin is used in Telegram Threaded Mode, each thread has its own session key like `agent:main:main:thread:369520`. Use `--notify-session-id` to wake the exact thread session — the session carries thread context for auto-routing:
+When Marvin is used in Telegram Threaded Mode, each thread has its own session key like `agent:main:main:thread:369520`.
+
+**Fail-safe routing (NEW):** `run-task.py` now enforces strict thread routing.
+- If `--session` contains `:thread:<id>`, the script **refuses to start** unless Telegram target + thread session UUID are resolved.
+- It auto-resolves missing values from `sessions_list` when possible.
+- If the session is inactive and not returned by API, it falls back to local session files: `~/.openclaw/agents/main/sessions/*-topic-<thread_id>.jsonl`.
+- If provided `--notify-session-id` mismatches the session key, it exits with error.
+- Result: misrouted launches/heartbeats to main chat are blocked before Claude starts.
+
+Use `--notify-session-id` to wake the exact thread session:
 
 ```bash
 nohup python3 {baseDir}/run-task.py \
   --task "$(cat /tmp/cc-prompt.txt)" \
   --project ~/projects/my-project \
   --session "agent:main:main:thread:369520" \
-  --notify-channel telegram \
-  --notify-target 112087171 \
-  --notify-session-id "SESSION_UUID" \
   --timeout 900 \
   > /tmp/cc-run.log 2>&1 &
 ```
 
 All 5 notification types route to the DM thread when `--session` key contains `:thread:<id>` ✅
 
-- `--notify-session-id` — OpenClaw session UUID. Wakes the exact thread session via `openclaw agent --session-id <uuid>`. Also enables thread-aware `agent_msg` instruction: explicit `threadId` is embedded in the instruction so the agent passes it to the message tool → agent summary reaches the thread ✅
-- `--notify-thread-id` — Telegram thread ID (auto-detected from session key `*:thread:<id>`). Passed as `threadId` in direct HTTP calls — works for DM threads ✅ (confirmed in practice, despite Bot API docs saying "forum supergroups only").
-- `--reply-to-message-id` — Kept but NOT injected into agent_msg. Does not improve DM thread routing; can break routing if combined with `message_thread_id`.
+- `--notify-session-id` — optional override. Usually auto-resolved from session metadata/files.
+- `--notify-thread-id` — optional override. Usually auto-extracted from `--session`.
+- `--reply-to-message-id` — optional debug field; avoid for DM thread routing.
+- `--validate-only` — resolve routing and exit (no Claude run). Use this to verify thread launch args safely.
 
-- `--notify-channel` — `telegram` or `whatsapp` (overrides auto-detection)
-- `--notify-target` — Telegram chat ID or WhatsApp JID
+- `--notify-channel` — optional override (`telegram`/`whatsapp`)
+- `--notify-target` — optional override for chat ID / JID
 - `--timeout` — max runtime in seconds (default: 7200 = 2 hours)
 - Always redirect stdout/stderr to a log file
 
@@ -249,6 +272,59 @@ def foo(x: Optional[str]) -> Optional[str]: ...
 def foo(x: str | None) -> str | None: ...
 ```
 
+## Full E2E Test (reference)
+
+Use this when you need to validate the **entire pipeline** in one run:
+- launch notification in source thread
+- heartbeat after >60s
+- Claude mid-task progress update (📡 🟢 CC)
+- final result in source thread
+- agent wake attempt with summary step
+
+### Pass criteria
+1. Launch message appears in the same thread (with expandable prompt quote)
+2. At least one wrapper heartbeat appears after ~60s
+3. At least one mid-task CC update appears (via `/tmp/cc-notify-<pid>.py`)
+4. Final result appears in the same thread (expandable result quote)
+5. Agent wake is attempted (`openclaw agent --session-id ...`) and does not duplicate final result
+
+### Canonical full test prompt pattern
+- keep prompt **compact** (about 10 lines) for routine testing
+- ensure prompt length is **>4500 chars** to verify quote truncation/collapse behavior in Telegram
+- force runtime >60s (`sleep 70`) to trigger wrapper heartbeat
+- explicitly instruct Claude to call the notify script at least twice
+- include a short structured report so output is easy to verify
+
+### Canonical launch (minimal mode)
+```bash
+cat > /tmp/cc-full-test-prompt.txt << 'EOF'
+# ~10 lines, but total >4500 chars:
+# 1) notify script now
+# 2) create test file with repeated text (to exceed 4500 chars)
+# 3) sleep 70 + notify script again
+# 4) run several shell commands
+# 5) return short structured report
+EOF
+
+python3 {baseDir}/run-task.py \
+  --task "$(cat /tmp/cc-full-test-prompt.txt)" \
+  --project /tmp/cc-e2e-project \
+  --session "agent:main:main:thread:<THREAD_ID>" \
+  --validate-only
+
+nohup python3 {baseDir}/run-task.py \
+  --task "$(cat /tmp/cc-full-test-prompt.txt)" \
+  --project /tmp/cc-e2e-project \
+  --session "agent:main:main:thread:<THREAD_ID>" \
+  --timeout 900 \
+  > /tmp/cc-full-test.log 2>&1 &
+```
+
+### Verification artifacts
+- wrapper log: `/tmp/cc-full-test.log`
+- Claude output: `/tmp/cc-YYYYMMDD-HHMMSS.txt`
+- session registry entry in `~/.openclaw/claude_sessions.json`
+
 ## Examples
 
 ### WhatsApp: Create a tool
@@ -260,14 +336,12 @@ nohup python3 {baseDir}/run-task.py \
   > /tmp/cc-run.log 2>&1 &
 ```
 
-### Telegram: Research codebase
+### Telegram: Research codebase (thread-safe)
 ```bash
 nohup python3 {baseDir}/run-task.py \
   --task "$(cat /tmp/cc-prompt.txt)" \
   --project ~/projects/my-project \
-  --session "agent:main:telegram:user:123456789" \
-  --notify-channel telegram \
-  --notify-target 123456789 \
+  --session "agent:main:main:thread:<THREAD_ID>" \
   --timeout 1800 \
   > /tmp/cc-run.log 2>&1 &
 ```
@@ -278,13 +352,10 @@ nohup python3 {baseDir}/run-task.py \
   --task "$(cat /tmp/cc-prompt.txt)" \
   --project ~/projects/my-project \
   --session "agent:main:main:thread:369520" \
-  --notify-channel telegram \
-  --notify-target 112087171 \
-  --notify-session-id "fef10682-71b7-497b-b6dc-2d3f24c068c2" \
   --timeout 1800 \
   > /tmp/cc-run.log 2>&1 &
-# All 5 notification types go to thread: launch, heartbeats, result, agent summary, CC direct updates
-# thread_id auto-extracted from session key; SESSION_UUID from sessions_list
+# thread_id auto-extracted from session key
+# target + session UUID auto-resolved from API/local session files
 ```
 
 ### Telegram Threaded Mode: Mid-task updates from Claude Code
@@ -306,9 +377,6 @@ nohup python3 {baseDir}/run-task.py \
   --task "$(cat /tmp/cc-prompt.txt)" \
   --project ~/projects/my-project \
   --session "agent:main:main:thread:<THREAD_ID>" \
-  --notify-channel telegram \
-  --notify-target <CHAT_ID> \
-  --notify-session-id "<SESSION_UUID>" \
   --timeout 1800 \
   > /tmp/cc-run.log 2>&1 &
 # run-task.py writes /tmp/cc-notify-{pid}.py before launch
@@ -318,21 +386,30 @@ nohup python3 {baseDir}/run-task.py \
 
 > ⚠️ **Never embed bot tokens or curl commands in the task prompt** — Claude Code correctly identifies hardcoded tokens + external API calls as prompt injection and refuses. Use the on-disk script pattern above instead.
 
-> **Quick reference: launching from a Telegram DM thread**
+> **Quick reference: launching from a Telegram DM thread (minimal mode)**
 > ```bash
+> # 1) Validate routing first (no Claude run)
+> python3 {baseDir}/run-task.py \
+>   --task "probe" \
+>   --project ~/projects/x \
+>   --session "agent:main:main:thread:<THREAD_ID>" \
+>   --validate-only
+>
+> # 2) Real launch (only 3 required params)
 > nohup python3 {baseDir}/run-task.py \
 >   --task "$(cat /tmp/prompt.txt)" \
 >   --project ~/projects/x \
 >   --session "agent:main:main:thread:<THREAD_ID>" \
->   --notify-channel telegram \
->   --notify-target <CHAT_ID> \
->   --notify-session-id "<SESSION_UUID>" \
 >   --timeout 900 \
 >   > /tmp/cc-run.log 2>&1 &
 > ```
-> - `THREAD_ID`: from session key `*:thread:<id>` (auto-extracted)
-> - `SESSION_UUID`: from `sessions_list`
-> - All 5 notification types → thread ✅
+> - Required: `--task`, `--project`, `--session`
+- Safety: Telegram launches without `:thread:<id>` are blocked by default (`❌ Unsafe routing blocked`)
+- To intentionally send to Telegram main chat, pass `--allow-main-telegram` **and** set env `ALLOW_MAIN_TELEGRAM=1`
+> - `THREAD_ID` is auto-extracted from session key
+> - Target + session UUID are auto-resolved (API, then local session-file fallback)
+> - If routing is inconsistent/unresolved, script exits with `❌ Invalid routing` before run
+> - All notifications from run-task (launch/heartbeat/result) stay on the source thread ✅
 
 ### Long task with extended timeout
 ```bash
@@ -443,13 +520,11 @@ Common resume failures:
 # Save prompt
 write /tmp/research-prompt.txt with "Research the codebase architecture for project X"
 
-# Launch task (Telegram example)
+# Launch task (Telegram thread-safe example)
 nohup python3 {baseDir}/run-task.py \
   --task "$(cat /tmp/research-prompt.txt)" \
   --project ~/projects/project-x \
-  --session "agent:main:telegram:user:123456789" \
-  --notify-channel telegram \
-  --notify-target 123456789 \
+  --session "agent:main:main:thread:<THREAD_ID>" \
   --session-label "Project X architecture research" \
   > /tmp/cc-run.log 2>&1 &
 ```
