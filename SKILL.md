@@ -29,12 +29,23 @@ Give it prompts the same way you'd talk to a smart human — natural language, f
 
 For Telegram thread runs, `run-task.py` is designed to either route correctly or fail immediately.
 
-- Use only `--session "agent:main:main:thread:<THREAD_ID>"`
+### Mandatory step before launch
+Resolve the **current runtime session key** first (source of truth), then launch with it.
+
+- Get current key via `sessions_list` (or existing runtime context)
+- If key is `agent:main:main:thread:<THREAD_ID>` → use it directly in `--session`
+- Never derive `--session` from `chat_id`/sender id heuristics
+
+### Rules
+- Use only `--session "agent:main:main:thread:<THREAD_ID>"` for thread tasks
 - Never use `agent:main:telegram:user:<id>` for thread tasks
 - If routing metadata is inconsistent (thread/session UUID/target mismatch), script exits with `❌ Invalid routing`
-- Main-chat Telegram launches are blocked by default; intentional override requires both:
-  - `--allow-main-telegram`
-  - `ALLOW_MAIN_TELEGRAM=1`
+- Default mode is `--telegram-routing-mode auto`:
+  - allows non-thread Telegram for setups without thread sessions
+  - blocks ambiguous user-scope session key (`agent:main:telegram:user:<id>`) unless explicitly forced
+  - blocks non-thread launch if a recent thread session exists for same target (likely misroute)
+- Force strict thread-only behavior with `--telegram-routing-mode thread-only`
+- Force non-thread behavior with `--telegram-routing-mode allow-non-thread` or `--allow-main-telegram`
 
 This is intentional: **abort fast > silent misroute**.
 
@@ -405,7 +416,7 @@ nohup python3 {baseDir}/run-task.py \
 > ```
 > - Required: `--task`, `--project`, `--session`
 - Safety: Telegram launches without `:thread:<id>` are blocked by default (`❌ Unsafe routing blocked`)
-- To intentionally send to Telegram main chat, pass `--allow-main-telegram` **and** set env `ALLOW_MAIN_TELEGRAM=1`
+- For non-thread Telegram deployments, use `--telegram-routing-mode allow-non-thread`.
 > - `THREAD_ID` is auto-extracted from session key
 > - Target + session UUID are auto-resolved (API, then local session-file fallback)
 > - If routing is inconsistent/unresolved, script exits with `❌ Invalid routing` before run

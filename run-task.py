@@ -160,6 +160,71 @@ def resolve_session_meta(token: str, session_key: str) -> Optional[dict]:
     return None
 
 
+def has_recent_thread_session(token: str, telegram_target: str, max_age_hours: int = 24) -> bool:
+    """Return True if there is a recent thread session for this Telegram target.
+
+    Used to prevent accidental non-thread launches when the user is actively using thread mode.
+    Checks both sessions_list and local topic session files.
+    """
+    if not token or not telegram_target:
+        return False
+    data = _invoke_tool(token, "sessions_list", {"limit": 300})
+    if not data:
+        return False
+    try:
+        txt = data.get("result", {}).get("content", [{}])[0].get("text", "")
+        payload = json.loads(txt) if txt else {}
+        now_ms = int(time.time() * 1000)
+        max_age_ms = max_age_hours * 3600 * 1000
+        for s in payload.get("sessions", []):
+            key = s.get("key", "")
+            if ":thread:" not in key:
+                continue
+            dc = s.get("deliveryContext", {}) or {}
+            to = dc.get("to", "")
+            if to == f"telegram:{telegram_target}":
+                updated = int(s.get("updatedAt", 0) or 0)
+                if updated and (now_ms - updated) <= max_age_ms:
+                    return True
+    except Exception:
+        pass
+
+    # Fallback: local topic session files (handles cases where sessions_list only shows current session)
+    try:
+        base = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
+        if base.exists():
+            now = time.time()
+            max_age_sec = max_age_hours * 3600
+            files = sorted(base.glob("*-topic-*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for p in files[:200]:
+                if (now - p.stat().st_mtime) > max_age_sec:
+                    continue
+                with p.open("r", encoding="utf-8") as f:
+                    for i, line in enumerate(f):
+                        if i > 120:
+                            break
+                        obj = json.loads(line)
+                        if obj.get("type") != "message":
+                            continue
+                        msg = (obj.get("message") or {})
+                        if msg.get("role") != "user":
+                            continue
+                        for b in msg.get("content") or []:
+                            txt = b.get("text", "") if isinstance(b, dict) else ""
+                            if "sender_id" in txt:
+                                start = txt.find("{")
+                                end = txt.rfind("}")
+                                if start != -1 and end != -1 and end > start:
+                                    meta = json.loads(txt[start:end + 1])
+                                    sid = str(meta.get("sender_id", ""))
+                                    if sid and sid == str(telegram_target):
+                                        return True
+    except Exception:
+        pass
+
+    return False
+
+
 def resolve_thread_meta_from_local_files(thread_id: str) -> Optional[dict]:
     """Resolve {sessionId, telegramTarget} from local session jsonl files.
 
@@ -580,7 +645,8 @@ def main():
     parser.add_argument("--notify-session-id", help="OpenClaw session UUID for precise agent wake in threads")
     parser.add_argument("--reply-to-message-id", help="Telegram message ID to reply to (for DM thread routing)")
     parser.add_argument("--validate-only", action="store_true", help="Resolve routing and exit (no Claude run)")
-    parser.add_argument("--allow-main-telegram", action="store_true", help="Allow Telegram launch without :thread: session (unsafe; default blocked)")
+    parser.add_argument("--allow-main-telegram", action="store_true", help="Allow Telegram launch without :thread: session (for non-thread Telegram setups)")
+    parser.add_argument("--telegram-routing-mode", choices=["auto", "thread-only", "allow-non-thread"], default="auto", help="Telegram routing policy (default: auto)")
     args = parser.parse_args()
 
     # Set notification globals (overrides auto-detection)
@@ -677,11 +743,34 @@ def main():
     ch_now, tgt_now = detect_channel(args.session or "")
     is_telegram_route = (ch_now == "telegram") or (args.notify_channel == "telegram" and bool(args.notify_target))
     if is_telegram_route and not thread_id:
-        allow_main_env = os.getenv("ALLOW_MAIN_TELEGRAM", "") == "1"
-        if not (args.allow_main_telegram and allow_main_env):
+        # Non-thread Telegram is allowed for users/chats that do not use thread mode,
+        # but guarded in auto mode if we detect ambiguity.
+        tg_target = args.notify_target
+        user_scope_key = bool(args.session and args.session.startswith("agent:main:telegram:user:"))
+        if not tg_target and user_scope_key:
+            tg_target = args.session.split(":")[-1]
+
+        if args.telegram_routing_mode == "thread-only":
             print("❌ Unsafe routing blocked: Telegram launch requires thread session (:thread:<id>)", file=sys.stderr)
-            print("   To override for intentional main-chat run: pass --allow-main-telegram AND set ALLOW_MAIN_TELEGRAM=1", file=sys.stderr)
+            print("   Use --session agent:main:main:thread:<id>", file=sys.stderr)
             sys.exit(2)
+
+        if args.telegram_routing_mode == "allow-non-thread":
+            pass  # explicitly allowed
+        else:
+            # auto mode guard #1: synthesized/ambiguous user-scope key must be explicit
+            if user_scope_key and not args.allow_main_telegram:
+                print("❌ Unsafe routing blocked: session key is non-thread user scope (agent:main:telegram:user:...).", file=sys.stderr)
+                print("   For thread chats use --session agent:main:main:thread:<id>.", file=sys.stderr)
+                print("   For intentional non-thread Telegram, pass --allow-main-telegram or --telegram-routing-mode allow-non-thread.", file=sys.stderr)
+                sys.exit(2)
+
+            # auto mode guard #2: if this target has recent thread sessions, treat non-thread as likely mistake
+            if tg_target and has_recent_thread_session(token, str(tg_target), max_age_hours=24):
+                if not args.allow_main_telegram:
+                    print("❌ Unsafe routing blocked: recent thread session detected for this Telegram target.", file=sys.stderr)
+                    print("   Use thread session key (:thread:<id>) or pass --allow-main-telegram to force non-thread.", file=sys.stderr)
+                    sys.exit(2)
 
     if args.validate_only:
         ch, tgt = detect_channel(args.session or "")
