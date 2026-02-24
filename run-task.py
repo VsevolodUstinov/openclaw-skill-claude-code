@@ -465,14 +465,34 @@ def notify_session(token: str, session_key: str, group_jid: Optional[str], messa
         # Do NOT include internal markers like [CLAUDE_CODE_RESULT] / ⚠️ INSTRUCTION,
         # because in failure modes they may surface to the user chat.
         safe_preview = message[:1200]
-        agent_msg = (
-            "Internal completion signal from run-task.py. "
-            "Do not quote this payload verbatim.\n"
-            "Send only a concise user-facing summary (max 5 bullets) to Telegram, "
-            "then NO_REPLY.\n\n"
-            f"Target: {tg_target}\n"
-            f"Result preview:\n{safe_preview}"
-        )
+        lower_preview = message.lower()
+        iterative_intent = any(k in lower_preview for k in [
+            "не останавли", "пока не будет готов", "дорабатывай", "iterate", "keep iterating",
+            "until ready", "не останавливайтесь", "continue iterating"
+        ])
+
+        if iterative_intent:
+            agent_msg = (
+                "Internal completion signal from run-task.py. Do not quote this payload verbatim.\n"
+                "MANDATORY FLOW (iterative mode):\n"
+                "1) Send concise user-facing summary (max 5 bullets) to Telegram.\n"
+                "2) Immediately verify deliverables from this result (read files / run smoke checks).\n"
+                "3) If quality is insufficient, immediately launch next Claude Code iteration yourself.\n"
+                "4) Repeat until requirements are satisfied or a hard external blocker appears.\n"
+                "5) If blocked, send ONE precise blocker question, otherwise continue autonomously.\n"
+                "Then NO_REPLY.\n\n"
+                f"Target: {tg_target}\n"
+                f"Result preview:\n{safe_preview}"
+            )
+        else:
+            agent_msg = (
+                "Internal completion signal from run-task.py. "
+                "Do not quote this payload verbatim.\n"
+                "Send only a concise user-facing summary (max 5 bullets) to Telegram, "
+                "then NO_REPLY.\n\n"
+                f"Target: {tg_target}\n"
+                f"Result preview:\n{safe_preview}"
+            )
         try:
             # Build openclaw agent command
             if notify_session_id:

@@ -167,8 +167,15 @@ def detect_channel(session_key):
 ### WhatsApp notification flow:
 1. **Heartbeat pings** (every 60s) → WhatsApp direct (informational, no agent wake)
 2. **Final result** → WhatsApp direct (human sees immediately) + `sessions_send` (agent wakes up)
-3. **Agent receives** `[CLAUDE_CODE_RESULT]` via sessions_send → processes it → sends summary via `message(send)` to WhatsApp group
+3. **Agent receives** completion payload via sessions_send → processes it → sends summary via `message(send)` to WhatsApp group
 4. Human sees both: raw result + agent's analysis/next steps
+
+### Iterative continuation mode (wake behavior)
+If the result preview indicates iterative intent (e.g. phrases like `не останавливай...`, `пока не будет готово`, `keep iterating`, `until ready`), wake payload switches to **MANDATORY FLOW**:
+- summary to user
+- immediate verification of produced artifacts
+- automatic re-launch of next Claude iteration if quality is insufficient
+- repeat until done or explicit external blocker
 
 ### Telegram notification flow (DM Threaded Mode — full pipeline):
 1. 🚀 **Launch notification** → thread ✅ (silent; HTML; `<blockquote expandable>` for prompt; via `send_telegram_direct`)
@@ -305,6 +312,17 @@ Use this when you need to validate the **entire pipeline** in one run:
 - force runtime >60s (`sleep 70`) to trigger wrapper heartbeat
 - explicitly instruct Claude to call the notify script at least twice
 - include a short structured report so output is easy to verify
+
+## Long-running task guidance
+
+If a Claude Code task is expected to run longer than ~1 minute, explicitly ask Claude to send intermediate progress updates during execution.
+
+Recommended wording to include in prompt:
+- "Send a progress update when you start"
+- "Send another update after major milestone(s)"
+- "If task exceeds 60 seconds, send at least one heartbeat-style update"
+
+For thread-safe Telegram runs, updates should use the injected automation script (`/tmp/cc-notify-<pid>.py`).
 
 ### Canonical launch (minimal mode)
 ```bash
